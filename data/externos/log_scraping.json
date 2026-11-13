@@ -1,0 +1,19 @@
+{
+  "url": "https://www.miscuentasmedicas.com/Resolucion-3047-de-2008-anexo-tecnico-6-manual-de-glosas-devoluciones-y-respuestas",
+  "estado_http": 200,
+  "content_type": "text/html",
+  "fuente": "Mis Cuentas Médicas · transcripción del Anexo Técnico 6",
+  "fecha_utc": "2026-11-13T22:45:58.559393+00:00",
+  "bytes": 114877,
+  "sha256": "9b1c3f5448a430907f57af6464adff9aab9d58e4e90761504d16724b21875d3d",
+  "robots_txt_permite": true,
+  "filas_extraidas": 89,
+  "por_concepto_general": {
+    "Facturación": 29,
+    "Soportes": 20,
+    "Tarifas": 11,
+    "Autorización": 10,
+    "Pertinencia": 10,
+    "Cobertura": 9
+  }
+}

@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: API de glosas medicas (ALB + Auto Scaling Group con 2 instancias EC2)
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC (puede ser la VPC por defecto)
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Mínimo 2 subredes públicas en zonas de disponibilidad distintas
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  ModelS3Uri:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|s3://[a-z0-9.-]+/[A-Za-z0-9._/-]+$"
+    Description: "Opcional, s3://bucket/model.joblib. Vacío = usa la regla base."
+
+Conditions:
+  TieneModelo: !Not [!Equals [!Ref ModelS3Uri, ""]]
+
+Resources:
+  SgAlb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTP desde internet hacia el ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+
+  SgInstancias:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Solo el ALB puede llegar a la API (puerto 8000)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 8000, ToPort: 8000, SourceSecurityGroupId: !Ref SgAlb}
+
+  RolInstancia:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: "sts:AssumeRole"}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - !If
+          - TieneModelo
+          - PolicyName: LeerModelo
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: "s3:GetObject"
+                  Resource: !Sub
+                    - "arn:${AWS::Partition}:s3:::${Objeto}"
+                    - Objeto: !Select [1, !Split ["s3://", !Ref ModelS3Uri]]
+          - !Ref AWS::NoValue
+
+  PerfilInstancia:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RolInstancia]
+
+  Plantilla:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: {Arn: !GetAtt PerfilInstancia.Arn}
+        SecurityGroupIds: [!Ref SgInstancias]
+        MetadataOptions: {HttpTokens: required}
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: {VolumeSize: 20, VolumeType: gp3, Encrypted: true}
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            dnf install -y python3.11 python3.11-pip
+            mkdir -p /opt/glosas
+            python3.11 -m venv /opt/glosas/venv
+            /opt/glosas/venv/bin/pip install "fastapi>=0.115,<1" "pydantic>=2,<3" "uvicorn>=0.30,<1" pandas joblib
+            if [ -n "${ModelS3Uri}" ]; then
+              /opt/glosas/venv/bin/pip install scikit-learn
+              aws s3 cp "${ModelS3Uri}" /opt/glosas/model.joblib
+            fi
+            cat > /opt/glosas/app.py <<'PYEOF'
+__APP_PY__
+            PYEOF
+            cat > /etc/systemd/system/glosas.service <<'SVCEOF'
+            [Unit]
+            Description=API glosas
+            After=network.target
+            [Service]
+            WorkingDirectory=/opt/glosas
+            ExecStart=/opt/glosas/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+            Restart=always
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+            systemctl daemon-reload
+            systemctl enable --now glosas
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref SgAlb]
+
+  GrupoDestino:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8000
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - {Type: forward, TargetGroupArn: !Ref GrupoDestino}
+
+  Asg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: Listener
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+    Properties:
+      MinSize: "2"
+      MaxSize: "4"
+      DesiredCapacity: "2"
+      VPCZoneIdentifier: !Ref SubnetIds
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs: [!Ref GrupoDestino]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref Plantilla
+        Version: !GetAtt Plantilla.LatestVersionNumber
+      Tags:
+        - {Key: Name, Value: glosas-api, PropagateAtLaunch: true}
+
+  EscaladoCpu:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref Asg
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification: {PredefinedMetricType: ASGAverageCPUUtilization}
+        TargetValue: 60
+
+Outputs:
+  UrlApi:
+    Value: !Sub "http://${Alb.DNSName}"
+    Description: Base de la API; probar /health y /predict

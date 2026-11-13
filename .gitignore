@@ -1,0 +1,23 @@
+# --- Datos (NUNCA subir: contienen información del hospital) ---
+data/*
+!data/externos/
+*.csv
+*.xlsx
+*.xls
+*.parquet
+!data/externos/*.csv
+data/externos/raw/
+# --- Python / Jupyter ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+# --- Credenciales y AWS ---
+.env
+*.pem
+*.key
+.aws/
+# --- Sistema ---
+.DS_Store
+Thumbs.db
