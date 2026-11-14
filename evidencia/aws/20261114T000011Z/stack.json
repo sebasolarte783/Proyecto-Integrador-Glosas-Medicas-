@@ -1,0 +1,12 @@
+{
+    "Nombre": "glosas-api",
+    "Estado": "CREATE_COMPLETE",
+    "Creado": "2026-11-13T23:55:13.796000+00:00",
+    "Salidas": [
+        {
+            "OutputKey": "UrlApi",
+            "OutputValue": "http://glosas-a-Alb-KAinDCOyDx7Y-1042844233.us-east-1.elb.amazonaws.com",
+            "Description": "Base de la API; probar /health y /predict"
+        }
+    ]
+}
